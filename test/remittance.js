@@ -1,12 +1,14 @@
 var Remittance = artifacts.require("./Remittance.sol");
-
-require('bluebird').promisifyAll(web3.eth, { suffix: "Promise" });
+var Promise = require("bluebird");
+var join = Promise.join;
+Promise.promisifyAll(web3.eth, { suffix: "Promise" });
 
 contract('Remittance', accounts => {
   let remittanceInstance;
   let owner = accounts[0];
   let remittanceSender = accounts[1];
   let remittanceRecepient = accounts[2];
+  let notRemittanceRecepient = accounts[3];
   let remittanceRecipientHash;
   const password1 = "p@$$w0rd";
   let password1Hash;
@@ -15,40 +17,47 @@ contract('Remittance', accounts => {
   let combinedPasswordHash;
   const deadlineLimitBlocks = 100;
   const withdrawableForDuration = 99;
-  const remittanceAmount = 7777777;
   let gasPrice;
   let blockNumber;
-  //let costOfDeployingTheContract = 100; //TODO
+  let costOfDeployingTheContract = 100;
+  let fee;
+  let remittanceAmount;
 
    before("check that prerequisites for tests are valid", function() {
-    const accountsToCheck = [0, 1, 2];
-    accountsToCheck.forEach(function (accountNumber) {
+    const accountsToCheck = [0, 1, 2, 3];
+    
+    Promise.map(accountsToCheck, function (accountNumber) {
       assert.isDefined(accounts[accountNumber], `"accounts[${accountNumber}] is undefined`);
-      try {
-        web3.eth.sendTransaction({
-            from: accounts[accountNumber],
-            to: accounts[accountNumber],
-            value: 0
-        });
-        return false;
-      } catch (err) {
-        assert.fail(`"accounts[${accountNumber}] is not unlocked`);
-      }
-      web3.eth.getBalancePromise(accounts[accountNumber])
-      .then((balance) => {
-        assert.isTrue(balance > web3.toWei('1', 'ether'), `"accounts[${accountNumber}] insufficient balance`);
-      });
+      var signedData = web3.eth.signPromise(accounts[accountNumber], "someData")
+      var balance = web3.eth.getBalancePromise(accounts[accountNumber]);
+      return join(signedData, balance, function(signedData, balance) {
+        return {
+          signedData: signedData,
+          balance: balance,
+          accountNumber: accountNumber
+        }
+      })
+    })
+    .catch((error) => {
+      assert.fail("one of the accounts is is not unlocked");
+    })
+    .each((accountPromises) => {
+        assert.isTrue(accountPromises.balance.greaterThan(web3.toWei(1, 'ether')), `accounts[${accountPromises.accountNumber}] insufficient balance`);
     });
   });
 
   beforeEach("create a new Remittance contract instance", () => {
-    return Remittance.new(deadlineLimitBlocks, { from: owner })
+    return Remittance.new(deadlineLimitBlocks, costOfDeployingTheContract, { from: owner })
     .then(instance => {
       remittanceInstance = instance;
       return remittanceInstance.owner();
     })
     .then(instanceOwner => {
       assert.equal(instanceOwner, owner);
+      return remittanceInstance.gasRequiredToDeployThisContract();
+    })
+    .then(gasRequiredToDeployThisContract => {
+      assert.equal(gasRequiredToDeployThisContract, costOfDeployingTheContract);
       return remittanceInstance.deadlineLimitBlocks();
     })
     .then(instanceDeadlineLimitBlocks => {
@@ -76,6 +85,8 @@ contract('Remittance', accounts => {
     })
     .then(currentGasPrice => {
       gasPrice = currentGasPrice;
+      fee = gasPrice.times(costOfDeployingTheContract).minus(1);
+      remittanceAmount = fee.plus(100);
       return web3.eth.getBlockNumberPromise()
     })
     .then(currentBlockNumber => {
@@ -89,7 +100,7 @@ contract('Remittance', accounts => {
         from: remittanceSender,
         value: remittanceAmount
       })
-    .then(() => {
+      .then(() => {
         assert.fail("deposit was successful, but it should have thrown");
       })
       .catch((error) => {
@@ -101,7 +112,7 @@ contract('Remittance', accounts => {
         from: remittanceSender,
         value: remittanceAmount
       })
-    .then(() => {
+      .then(() => {
         assert.fail("deposit was successful, but it should have thrown");
       })
       .catch((error) => {
@@ -113,7 +124,7 @@ contract('Remittance', accounts => {
         from: remittanceSender,
         value: remittanceAmount
       })
-    .then(() => {
+      .then(() => {
         assert.fail("deposit was successful, but it should have thrown");
       })
       .catch((error) => {
@@ -125,37 +136,37 @@ contract('Remittance', accounts => {
         from: remittanceSender,
         value: remittanceAmount
       })
-    .then(() => {
+      .then(() => {
         assert.fail("deposit was successful, but it should have thrown");
       })
       .catch((error) => {
         assert.isTrue(error.message.includes("invalid opcode"))
       });
     });
-    
-    /*it("should throw if the remittance amount is less than the fee", () => {
+    it("should throw if the remittance amount is less than the fee", () => {
       return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
         from: remittanceSender,
-        value: (costOfDeployingTheContract * gasPrice) - 2
+        value: fee - 1
       })
-    .then(() => {
+      .then(() => {
         assert.fail("deposit was successful, but it should have thrown");
       })
       .catch((error) => {
         assert.isTrue(error.message.includes("invalid opcode"))
       });
-    });*/
-
+    });
     it("should deposit succesfully if everything is provided correctly", () => {
       return remittanceInstance.deposit.call(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
         from: remittanceSender,
-        value: remittanceAmount
+        value: remittanceAmount,
+        gasPrice: gasPrice
       })
       .then(result => {
         assert.isTrue(result);
         return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
           from: remittanceSender,
-          value: remittanceAmount
+          value: remittanceAmount,
+          gasPrice: gasPrice
         })
       })
       .then(txn => {
@@ -164,9 +175,9 @@ contract('Remittance', accounts => {
           assert.equal(logRemittanceDeposited.event, "LogRemittanceDeposited");
           assert.equal(logRemittanceDeposited.args.sender, remittanceSender);
           assert.equal(logRemittanceDeposited.args.recipientAddressHash, remittanceRecipientHash);
-          assert.equal(logRemittanceDeposited.args.amount, remittanceAmount);
-          //assert.equal(logRemittanceDeposited.args.feeToBeCollected, (costOfDeployingTheContract * gasPrice) - 1);
-          assert.equal(logRemittanceDeposited.args.deadlineBlockNumber.toString(10), (blockNumber + withdrawableForDuration + 1).toString(10));
+          assert.strictEqual(logRemittanceDeposited.args.amount.toString(10), remittanceAmount.toString(10));
+          assert.strictEqual(logRemittanceDeposited.args.feeToBeCollected.toString(10), fee.toString(10));
+          assert.strictEqual(logRemittanceDeposited.args.deadlineBlockNumber.toString(10), (blockNumber + withdrawableForDuration + 1).toString(10));
           assert.equal(logRemittanceDeposited.args.combinedPasswordsHash, combinedPasswordHash);
 
           return remittanceInstance.remittances(combinedPasswordHash);
@@ -174,21 +185,22 @@ contract('Remittance', accounts => {
       .then(remittanceInfo => {
         assert.equal(remittanceInfo[0], remittanceSender);
         assert.equal(remittanceInfo[1], remittanceRecipientHash);
-        assert.equal(remittanceInfo[2].toString(10), remittanceAmount.toString(10));
-        //assert.equal(remittanceInfo.feeToBeCollected, (costOfDeployingTheContract * gasPrice) - 1);
-        assert.equal(remittanceInfo[3].toString(10), (blockNumber + withdrawableForDuration + 1).toString(10));
+        assert.strictEqual(remittanceInfo[2].toString(10), remittanceAmount.toString(10));
+        assert.strictEqual(remittanceInfo[3].toString(10), fee.toString(10));
+        assert.strictEqual(remittanceInfo[4].toString(10), (blockNumber + withdrawableForDuration + 1).toString(10));
       })
     });
-
     it("should throw if the combined passwords hash has already been used", () => {
       return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
           from: remittanceSender,
-          value: remittanceAmount
+          value: remittanceAmount,
+          gasPrice: gasPrice
       })
       .then(txn => {
         return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
           from: remittanceSender,
-          value: remittanceAmount
+          value: remittanceAmount,
+          gasPrice: gasPrice
         })
       })
       .then(() => {
@@ -196,6 +208,99 @@ contract('Remittance', accounts => {
       })
       .catch((error) => {
         assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+  });
+
+  describe("deliver", () => {
+    it("should throw if password1 hash is empty (0)", () => {
+      return remittanceInstance.deliver(0, password2Hash, {
+        from: remittanceRecepient,
+        value: 0
+      })
+      .then(() => {
+        assert.fail("deliver was successful, but it should have thrown");
+      })
+      .catch((error) => {
+        assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+    it("should throw if password2 hash is empty (0)", () => {
+      return remittanceInstance.deliver(password1Hash, 0, {
+        from: remittanceRecepient,
+        value: 0
+      })
+      .then(() => {
+        assert.fail("deliver was successful, but it should have thrown");
+      })
+      .catch((error) => {
+        assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+    it("should throw if there is no remittance amount deposited for that password combination", () => {
+      return remittanceInstance.deliver(password1Hash, password2Hash, {
+        from: remittanceRecepient,
+        value: 0
+      })
+      .then(() => {
+        assert.fail("deliver was successful, but it should have thrown");
+      })
+      .catch((error) => {
+        assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+    it("should throw if the block deadline has passed for that remittance", () => {
+      return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, withdrawableForDuration, {
+          from: remittanceSender,
+          value: remittanceAmount,
+          gasPrice: gasPrice
+      })
+      .then(txn => {
+        return remittanceInstance.deliver(password1Hash, password2Hash, {
+          from: remittanceRecepient,
+          value: 0
+        })
+      })
+      .then(() => {
+        assert.fail("deliver was successful, but it should have thrown");
+      })
+      .catch((error) => {
+        assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+    it("should throw if the requester is not the intended recipient", () => {
+      return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, 0, {
+          from: remittanceSender,
+          value: remittanceAmount,
+          gasPrice: gasPrice
+      })
+      .then(txn => {
+        return remittanceInstance.deliver(password1Hash, password2Hash, {
+          from: notRemittanceRecepient,
+          value: 0
+        })
+      })
+      .then(() => {
+        assert.fail("deliver was successful, but it should have thrown");
+      })
+      .catch((error) => {
+        assert.isTrue(error.message.includes("invalid opcode"))
+      });
+    });
+    it("should deliver succesfully if everything is provided correctly", () => {
+      return remittanceInstance.deposit(remittanceRecipientHash, combinedPasswordHash, 0, {
+          from: remittanceSender,
+          value: remittanceAmount,
+          gasPrice: gasPrice
+      })
+      .then(txn => {
+        return remittanceInstance.deliver.call(password1Hash, password2Hash, {
+          from: remittanceRecepient,
+          value: 0
+        })
+      })
+      .then(result => {
+        assert.isTrue(result);
       });
     });
   });
