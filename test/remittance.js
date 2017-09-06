@@ -325,13 +325,15 @@ contract('Remittance', accounts => {
       .then(balanceContract => {
         assert.strictEqual(balanceContract.toString(10), remittanceAmount.toString(10));
         return remittanceInstance.deliver.call(password1Hash, password2Hash, {
-          from: remittanceRecepient
+          from: remittanceRecepient,
+          gasPrice: gasPrice
         })
       })
       .then(result => {
         assert.isTrue(result);
         return remittanceInstance.deliver(password1Hash, password2Hash, {
-          from: remittanceRecepient
+          from: remittanceRecepient,
+          gasPrice: gasPrice
         })
       })
       .then(txn => {
@@ -364,17 +366,16 @@ contract('Remittance', accounts => {
       .then(finalBalanceOwner => {
         let expectedFinalBalanceOwner = ownerInitialBalance.plus(fee);
         assert.strictEqual(finalBalanceOwner.toString(10), expectedFinalBalanceOwner.toString(10));
+        return web3.eth.getBalancePromise(remittanceRecepient);
+      })
+      .then(finalBalanceRecipient => {
+        let expectedFinalBalanceRecipient = remittanceRecepientInitialBalance.plus(remittanceAmount).minus(fee).minus(deliverTransactionCost);
+        assert.strictEqual(finalBalanceRecipient.toString(10), expectedFinalBalanceRecipient.toString(10));
         return web3.eth.getBalancePromise(remittanceInstance.address);
-        //return web3.eth.getBalancePromise(remittanceRecepient);
       })
       .then(finalBalanceContract => {
         assert.strictEqual(finalBalanceContract.toString(10), "0");
-      })
-      // TODO: Why is this not adding up?
-      /*.then(finalBalanceRecipient => {
-        let expectedFinalBalanceRecipient = remittanceRecepientInitialBalance.plus(remittanceAmount).minus(fee).minus(deliverTransactionCost);
-        assert.strictEqual(finalBalanceRecipient.toString(10), expectedFinalBalanceRecipient.toString(10));
-      });*/
+      });
     });
   });
 });
